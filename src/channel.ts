@@ -1,3 +1,4 @@
+import { postPptDocReply, readPptRevision } from "./ppt-comment.js";
 import type {
   ChannelPlugin,
   OpenClawConfig,
@@ -39,7 +40,7 @@ function getAgentVersion(): string {
   }
 }
 import { WKSocket } from "./socket.js";
-import { handleInboundMessage, type OctoStatusSink, sanitizeFilename } from "./inbound.js";
+import { handleInboundMessage, resolveDispatchTimeoutMs, type OctoStatusSink, sanitizeFilename } from "./inbound.js";
 import { runWithSessionInitRetry, isSessionInitConflict } from "./session-retry.js";
 import { notifyInboundConflictDropped } from "./inbound-conflict-notice.js";
 import { enqueueInbound, getInboundQueueKey } from "./inbound-queue.js";
@@ -1233,6 +1234,7 @@ export const octoPlugin: ChannelPlugin<ResolvedOctoAccount> = {
       lastError: runtime?.lastError ?? null,
       lastInboundAt: runtime?.lastInboundAt ?? null,
       lastOutboundAt: runtime?.lastOutboundAt ?? null,
+      eventPoller: (runtime as { eventPoller?: import("./events-poll.js").EventPollerStatus } | undefined)?.eventPoller ?? null,
     }),
   },
   gateway: {
@@ -1577,10 +1579,32 @@ export const octoPlugin: ChannelPlugin<ResolvedOctoAccount> = {
         botUid: credentials.robot_id,
         // 整篇取回地址由这里的**已解析配置**拼,不让 agent 从载荷 url= 推域名。
         docsBaseUrl: account.config.docsApiUrl,
+        docsCliPath: account.config.docsCliPath,
+        dispatchTimeoutMs: resolveDispatchTimeoutMs(ctx.cfg as OpenClawConfig, account),
+        signal: ctx.abortSignal,
+        readPptRevision: (mention, signal) => readPptRevision({
+          apiUrl: account.config.docsApiUrl,
+          botToken: account.config.botToken ?? "",
+          docId: mention.docId,
+          signal,
+        }),
         dedupe: docMentionDedupe,
         deadLetter: docTaskDeadLetter,
         dispatch: dispatchInboundMessage,
         postComment: async (mention, text, signal, intent) => {
+          if (mention.docKind === "ppt") {
+            await postPptDocReply({
+              apiUrl: account.config.docsApiUrl,
+              botToken: account.config.botToken ?? "",
+              docId: mention.docId,
+              parentId: mention.threadId,
+              body: text,
+              mentionKey: mention.idempotencyKey,
+              intent,
+              signal,
+            });
+            return;
+          }
           // HTML 文档的评论存在 octo-doc,且 mention.docId 是它的 slug ——
           // docs-backend 的 `/v1/bot/docs/<docId>/comments` 按 docId 查,拿 slug 去打
           // 每条都是 404。所以这里按类型分流,而不是靠「先试一次再回退」:那个 404
@@ -1635,6 +1659,10 @@ export const octoPlugin: ChannelPlugin<ResolvedOctoAccount> = {
           intervalMs: account.config.pollIntervalMs,
           waitSeconds: account.config.eventWaitSeconds,
           cursorStore: createFileEventCursorStore({ accountId: account.accountId }),
+          onStatus: (eventPoller) => {
+            const patch = { accountId: account.accountId, eventPoller: eventPoller ?? null };
+            ctx.setStatus(patch);
+          },
           log,
           ...(handleBotTask ? { onBotTask: handleBotTask } : {}),
           ...(docTasksEnabled ? { onDocMention: handleDocMention } : {}),

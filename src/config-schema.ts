@@ -22,6 +22,7 @@ export interface OctoAccountConfig {
   enabled?: boolean;
   botToken?: string;
   apiUrl?: string;
+  docsCliPath?: string;
   docsApiUrl?: string;  // Base URL for the docs domain (/v1/bot/docs/**); unset = same origin as apiUrl
   wsUrl?: string;
   cdnUrl?: string;  // CDN base URL for media files (e.g. https://cdn.example.com/bucket)
@@ -52,6 +53,7 @@ export interface OctoConfig {
   enabled?: boolean;
   botToken?: string;
   apiUrl?: string;
+  docsCliPath?: string;
   docsApiUrl?: string;  // Top-level default for the docs-domain base URL; unset = same origin as apiUrl
   wsUrl?: string;
   cdnUrl?: string;  // CDN base URL for media files (e.g. https://cdn.example.com/bucket)
@@ -174,6 +176,7 @@ export const OctoConfigJsonSchema = {
       botToken: { type: "string" },
       apiUrl: { type: "string" },
       docsApiUrl: { type: "string", description: DOCS_API_URL_DESCRIPTION },
+      docsCliPath: { type: "string", description: "Trusted local Octo CLI executable for PPT tasks; defaults to octo-cli." },
       wsUrl: { type: "string" },
       cdnUrl: { type: "string" },
       pollIntervalMs: { type: "number", minimum: 500 },
@@ -199,6 +202,7 @@ export const OctoConfigJsonSchema = {
             botToken: { type: "string" },
             apiUrl: { type: "string" },
             docsApiUrl: { type: "string", description: DOCS_API_URL_DESCRIPTION },
+            docsCliPath: { type: "string", description: "Trusted local Octo CLI executable for PPT tasks; defaults to octo-cli." },
             wsUrl: { type: "string" },
             cdnUrl: { type: "string" },
             pollIntervalMs: { type: "number", minimum: 500 },

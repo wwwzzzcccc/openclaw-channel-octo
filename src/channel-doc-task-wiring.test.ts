@@ -96,7 +96,7 @@ const API = "http://octo.test";
  * `startAccount` 返回的 Promise 会一直挂着直到 abort(gateway 用 resolve 表示
  * 「账号已停止」),所以不能直接 await 它 —— 起完之后 abort 再收尾。
  */
-async function startAccount(config: Record<string, unknown>): Promise<() => Promise<void>> {
+async function startAccount(config: Record<string, unknown>, setStatus: (patch: unknown) => void = () => {}): Promise<() => Promise<void>> {
   const { octoPlugin } = await import("./channel.js");
   const controller = new AbortController();
   const ctx = {
@@ -108,7 +108,7 @@ async function startAccount(config: Record<string, unknown>): Promise<() => Prom
     },
     cfg: {},
     log: undefined,
-    setStatus: () => {},
+    setStatus,
     abortSignal: controller.signal,
   } as never;
   const running = octoPlugin.gateway!.startAccount!(ctx);
@@ -569,4 +569,87 @@ describe("channel.ts:notice-only 路径在 HTML 文档上不得渲染成 applied
       await stop();
     }
   }, 60_000);
+});
+
+describe("channel.ts:PPT 文档任务生产接线", () => {
+  it("使用 docsApiUrl 读取 revision，并把 threadId 作为回复 parentId", async () => {
+    const DOCS = "http://docs-backend.test:3000";
+    const originalFetch = globalThis.fetch;
+    const requests: Array<{ url: string; init?: RequestInit }> = [];
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      requests.push({ url, init });
+      if (init?.method === "POST") {
+        return new Response(JSON.stringify({ data: { id: 88 } }), { status: 201 });
+      }
+      return new Response(JSON.stringify({ data: { baseRevision: 12 } }), { status: 200 });
+    }) as typeof fetch;
+
+    const { setOctoRuntime } = await import("./runtime.js");
+    setOctoRuntime({
+      config: { current: () => ({}) },
+      channel: {
+        reply: {
+          dispatchReplyWithBufferedBlockDispatcher: vi.fn(async () => {
+            throw new Error("reply session initialization conflicted for agent:x");
+          }),
+          resolveEnvelopeFormatOptions: () => ({}),
+          formatAgentEnvelope: ({ body }: { body: string }) => body,
+          finalizeInboundContext: (c: unknown) => c,
+        },
+        routing: { resolveAgentRoute: () => ({ agentId: "agent1", sessionKey: "sk", accountId: "acct1" }) },
+        session: {
+          resolveStorePath: () => "/tmp/store",
+          readSessionUpdatedAt: () => undefined,
+          recordInboundSession: async () => {},
+        },
+      },
+    } as never);
+
+    const stop = await startAccount({ docTasks: true, dispatchTimeoutMs: 1000, docsApiUrl: DOCS });
+    try {
+      const options = pollerOptions().find((o) => typeof o.onDocMention === "function")!;
+      const onDocMention = options.onDocMention as (mention: unknown) => Promise<void>;
+      const { parseDocCommentMention } = await import("./doc-mention.js");
+      await onDocMention(parseDocCommentMention({
+        ...docEvent,
+        event_data: {
+          ...docEvent.event_data,
+          doc_kind: "ppt",
+          idempotency_key: `docs:comment:ppt-wiring:${Date.now()}`,
+        },
+      }));
+
+      expect(requests.map(({ url }) => url)).toEqual([
+        `${DOCS}/v1/bot/docs/d1/ppt`,
+        `${DOCS}/v1/bot/docs/d1/ppt/comments`,
+      ]);
+      const post = requests[1]?.init;
+      expect(JSON.parse(String(post?.body))).toEqual({
+        body: "⚠️ 上一轮任务尚未结束，本次请求已跳过。请稍后重试。",
+        parentId: 70,
+      });
+      expect(new Headers(post?.headers).get("Idempotency-Key")).toBeTruthy();
+      expect(postDocComment).not.toHaveBeenCalled();
+    } finally {
+      await stop();
+      globalThis.fetch = originalFetch;
+    }
+  }, 60_000);
+});
+
+it('publishes and clears event diagnostics through the production account snapshot',async()=>{
+ const { octoPlugin } = await import('./channel.js');
+ const runtime: Record<string, unknown> = {};
+ const stop = await startAccount({docTasks:true},patch=>Object.assign(runtime,patch));
+ try {
+  const options=pollerOptions().find(o=>typeof o.onStatus==='function')!;
+  const onStatus=options.onStatus as (status: unknown)=>void;
+  const status={durableCursor:31,scanCursor:80,blockedEventId:32,blockedKind:'future_deck'};
+  onStatus(status);
+  const snapshot=()=>octoPlugin.status!.buildAccountSnapshot!({account:{accountId:'acct1',config:{}},runtime} as never);
+  expect(await snapshot()).toMatchObject({eventPoller:status});
+  onStatus(undefined);
+  expect(await snapshot()).toMatchObject({eventPoller:null});
+ } finally {await stop();}
 });

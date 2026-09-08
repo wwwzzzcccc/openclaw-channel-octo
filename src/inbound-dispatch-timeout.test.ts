@@ -295,6 +295,67 @@ afterEach(() => {
 });
 
 describe("dispatch timeout guard (issue #75)", () => {
+  it.each(["deadline", "account stop"])("PPT %s cancels the runtime before a late write or reply", async (reason) => {
+    const { dispatch } = installImmediateRuntime();
+    installFetchStub();
+    const controller = new AbortController();
+    let lateWrite = false;
+    let aborted = false;
+    const postComment = vi.fn().mockResolvedValue(undefined);
+    dispatch.mockImplementation(async (args: any) => {
+      const signal = args.replyOptions.abortSignal as AbortSignal;
+      if (reason === "account stop") setTimeout(() => controller.abort(), 20);
+      await new Promise<void>((resolve, reject) => {
+        const pending = setTimeout(() => { lateWrite = true; resolve(); }, 80);
+        signal.addEventListener("abort", () => {
+          aborted = true;
+          clearTimeout(pending);
+          reject(signal.reason);
+        }, { once: true });
+      });
+      await args.dispatcherOptions.deliver({ text: "late final" }, { kind: "final" });
+    });
+    await expect(runInbound({
+      log: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} },
+      docTask: {
+        docId: "deck", threadId: "1", sessionScope: "ppt:deck:1",
+        deadlineAt: Date.now() + (reason === "deadline" ? 40 : 1000), abortOnTimeout: true, signal: controller.signal,
+        postComment, reportTurn: () => {},
+      },
+    })).rejects.toThrow(reason === "deadline" ? "dispatch timed out" : "account stopped");
+    await new Promise(resolve => setTimeout(resolve, 90));
+    expect(aborted).toBe(true);
+    expect(lateWrite).toBe(false);
+    expect(postComment.mock.calls.some(call => call[0].includes("late final"))).toBe(false);
+  });
+
+  it("rolls back a persisted reservation if account stops before runtime handoff", async () => {
+    const { dispatch } = installImmediateRuntime();
+    installFetchStub();
+    const controller = new AbortController();
+    const rollback = vi.fn();
+    await expect(runInbound({docTask:{
+      docId:"deck",threadId:"1",sessionScope:"ppt:deck:1",signal:controller.signal,abortOnTimeout:true,
+      postComment:vi.fn(),reportTurn:()=>{},
+      onAgentTurnStarted:async()=>{controller.abort();},onAgentTurnNotStarted:rollback,
+    }})).rejects.toThrow("account stopped");
+    expect(dispatch).not.toHaveBeenCalled();expect(rollback).toHaveBeenCalledOnce();
+  });
+
+  it("does not hand an expired PPT task to the Agent runtime", async () => {
+    const { dispatch } = installImmediateRuntime();
+    installFetchStub();
+    await expect(runInbound({
+      log: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} },
+      docTask: {
+        docId: "deck", threadId: "1", sessionScope: "ppt:deck:1",
+        deadlineAt: Date.now() - 1, abortOnTimeout: true,
+        postComment: async () => {}, reportTurn: () => {},
+      },
+    })).rejects.toThrow("dispatch timed out");
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+
   it("started-state failure does not block Bot Task handoff to the real inbound dispatcher", async () => {
     const { dispatch: runtimeDispatch } = installImmediateRuntime();
     installFetchStub();
