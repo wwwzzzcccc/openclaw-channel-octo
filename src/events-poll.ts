@@ -265,6 +265,8 @@ export function startEventPoller(options: EventPollerOptions): EventPoller {
       // Only retryable Bot Tasks retain a bounded retry gap.
       let cursorBlocked = false;
       for (const event of ordered) {
+        // Finish the current receipt on stop, but never start another task.
+        if (stopped) return;
         // 已识别的事件才 ack。未识别的只推进游标(本消费者不再重复拉取),
         // 留在服务端直至过期 —— 不 ack 自己没处理的事件。
         let recognized = false;
@@ -294,8 +296,9 @@ export function startEventPoller(options: EventPollerOptions): EventPoller {
                 `octo: doc mention handler threw for event ${event.event_id}: ${error instanceof Error ? error.message : String(error)}`,
               );
             }
-            // Preserve the event even if shutdown also made the handler fail.
-            if (stopped) return;
+            // Only PPT has a durable pre-handoff reservation that makes replay
+            // safe. Legacy/HTML must finish their cursor + ACK even on shutdown.
+            if (stopped && mention.docKind === "ppt") return;
           } else if (event.event_type === "doc_comment_mention") {
             const rawKind =
               event.event_data && typeof event.event_data === "object"
@@ -324,7 +327,6 @@ export function startEventPoller(options: EventPollerOptions): EventPoller {
               } catch {
                 options.log?.error?.(`octo: unsupported doc event ${event.event_id} could not be recorded; cursor still advances`);
               }
-              if (stopped) return;
             }
           }
         }

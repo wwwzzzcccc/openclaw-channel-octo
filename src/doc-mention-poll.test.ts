@@ -475,3 +475,66 @@ it('scans a full page even when one event has a malformed id', async () => {
   expect(requested).toEqual([0,1]);expect(seen).toEqual([3]);expect(poller.cursor()).toBe(3);
  } finally {poller.stop();vi.useRealTimers();}
 });
+
+it.each([
+  { kind: undefined, throws: false },
+  { kind: undefined, throws: true },
+  { kind: 'html', throws: false },
+  { kind: 'html', throws: true },
+])('finishes legacy/HTML receipt on stop without replay ($kind, throws=$throws)', async ({ kind, throws }) => {
+  vi.useFakeTimers();
+  const cursorStore = memoryCursor(70);
+  const events = [docEvent(71, { doc_kind: kind }), docEvent(72, { doc_kind: kind })];
+  const acked: number[] = [], seen: number[] = [];
+  globalThis.fetch = vi.fn(async (input: any, init?: RequestInit) => {
+    const ack = /\/events\/(\d+)\/ack$/.exec(String(input));
+    if (ack) { acked.push(Number(ack[1])); return new Response('{"status":1}'); }
+    const since = Number(JSON.parse(String(init?.body)).event_id ?? 0);
+    return new Response(JSON.stringify({ status: 1, results: events.filter(e => e.event_id > since) }));
+  }) as typeof fetch;
+  let poller: ReturnType<typeof startEventPoller>;
+  let firstRun = true;
+  const options = { apiUrl: API, botToken: 'tok', intervalMs: 500, cursorStore,
+    onDocMention: async (m: DocCommentMention) => {
+      seen.push(m.eventId);
+      if (firstRun) {
+        poller.stop();
+        if (throws) throw new Error('stopped after document side effect');
+      }
+    },
+  };
+  poller = startEventPoller(options);
+  try {
+    await poller.ready; await vi.advanceTimersByTimeAsync(500);
+    expect(seen).toEqual([71]); expect(acked).toEqual([71]);
+    expect(cursorStore.saved).toEqual([71]);
+    firstRun = false;
+    poller = startEventPoller(options);
+    await poller.ready; await vi.advanceTimersByTimeAsync(1000);
+    expect(seen).toEqual([71, 72]); expect(acked).toEqual([71, 72]);
+  } finally { poller.stop(); vi.useRealTimers(); }
+});
+
+it('persists an unknown-kind dead letter once when its recorder stops the poller', async () => {
+  vi.useFakeTimers();
+  const cursorStore = memoryCursor(70);
+  const store = createMemoryDocTaskDeadLetterStore();
+  const { acked } = installFetch([docEvent(71, { doc_kind: 'future_deck' })]);
+  const dispatch = vi.fn();
+  let poller: ReturnType<typeof startEventPoller>;
+  const options = { apiUrl: API, botToken: 'tok', intervalMs: 500, cursorStore,
+    onDocMention: dispatch,
+    docTaskDeadLetter: { list: store.list, record: async (entry: Parameters<typeof store.record>[0]) => {
+      await store.record(entry); poller.stop();
+    } },
+  };
+  poller = startEventPoller(options);
+  try {
+    await poller.ready; await vi.advanceTimersByTimeAsync(500);
+    expect(cursorStore.saved).toEqual([71]); expect(acked).toEqual([]);
+    installFetch([docEvent(71, { doc_kind: 'future_deck' })]);
+    poller = startEventPoller(options);
+    await poller.ready; await vi.advanceTimersByTimeAsync(500);
+    expect(await store.list()).toHaveLength(1); expect(dispatch).not.toHaveBeenCalled();
+  } finally { poller.stop(); vi.useRealTimers(); }
+});

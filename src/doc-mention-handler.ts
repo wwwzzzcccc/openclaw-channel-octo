@@ -192,9 +192,9 @@ export function createDocMentionHandler(deps: DocMentionHandlerDeps) {
       if (isPpt) configuredBudget = typeof deps.dispatchTimeoutMs === "function"
         ? deps.dispatchTimeoutMs() : deps.dispatchTimeoutMs;
     } catch {
-      deps.dedupe.release(mention.idempotencyKey);
-      deps.log?.error?.("octo: could not resolve PPT task budget; agent skipped");
-      return;
+      // A transient config read must not silently ACK and discard the task.
+      // Keep account cancellation and the same finite default used below.
+      deps.log?.error?.("octo: could not resolve PPT task budget; using default budget");
     }
     const deadlineAt = isPpt
       ? Date.now() + (typeof configuredBudget === "number" && Number.isFinite(configuredBudget) && configuredBudget > 0 ? configuredBudget : 660_000)

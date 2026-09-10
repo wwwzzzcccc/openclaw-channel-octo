@@ -344,3 +344,30 @@ it('accepts a default-limit deck and its envelope when probing revision',async()
  vi.stubGlobal('fetch',vi.fn().mockResolvedValue(new Response(payload)));
  await expect(readPptRevision({apiUrl:'https://docs.example',botToken:'test-only',docId:'deck'})).resolves.toBe(42);
 });
+
+it('uses the bounded default budget when live config lookup throws', async () => {
+ const log={error:vi.fn()},dedupe=createMemoryDocMentionDedupeStore();
+ const dispatch=vi.fn(async(_m:any,_r:any,extra:any)=>{
+  expect(extra.docTask.deadlineAt-Date.now()).toBeGreaterThan(659_000);
+  expect(extra.docTask.deadlineAt-Date.now()).toBeLessThanOrEqual(660_000);
+  await extra.docTask.onAgentTurnStarted();
+  await extra.docTask.postComment('已核对，无需修改',undefined,'final');
+  extra.docTask.reportTurn({finalDelivered:true,delivered:true,lost:false,noticed:false});
+  return 'completed' as const;
+ });
+ const postComment=vi.fn(async()=>{});
+ await createDocMentionHandler({botUid:'bot',dedupe,dispatch,postComment,log,
+  dispatchTimeoutMs:()=>{throw new Error('config unavailable');}})(mention());
+ expect(dispatch).toHaveBeenCalledOnce();expect(postComment).toHaveBeenCalledOnce();
+ expect(log.error).toHaveBeenCalledWith(expect.stringContaining('default budget'));
+ expect(await dedupe.claim('key')).toBe(true);
+});
+
+it.each(['\n','\r','\v','\f','\u0085','\u2028','\u2029'])('keeps separator %j inside the quoted comment data', separator => {
+ const body='prefix'+separator+'injected_line=suffix';
+ const task=formatPptCommentTask({...mention(),text:body});
+ const lines=task.split(/[\n\r\v\f\u0085\u2028\u2029]/);
+ const comment=lines.find(line=>line.startsWith('comment='))!;
+ expect(JSON.parse(comment.slice('comment='.length))).toBe(body);
+ expect(lines.some(line=>line.startsWith('injected_line='))).toBe(false);
+});
