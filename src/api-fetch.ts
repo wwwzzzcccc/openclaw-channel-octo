@@ -193,6 +193,36 @@ interface JsonRequestOptions {
   idempotencyKey?: string;
   expectedStatus?: number;
   redirect?: RequestRedirect;
+  /** Optional decoded response cap for callers that fetch large documents. */
+  maxResponseBytes?: number;
+}
+
+async function readResponseText(response: Response, maxBytes?: number): Promise<string> {
+  if (maxBytes === undefined) return response.text();
+  const reader = response.body?.getReader();
+  if (!reader) return "";
+  let bytes = 0;
+  const chunks: Buffer[] = [];
+  try {
+    // Content-Length can understate a compressed or chunked response, so the
+    // decoded stream remains authoritative even after this early rejection.
+    if (Number(response.headers.get("content-length")) > maxBytes) {
+      throw new Error("Octo API response exceeds byte limit");
+    }
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      bytes += value.byteLength;
+      if (bytes > maxBytes) throw new Error("Octo API response exceeds byte limit");
+      chunks.push(Buffer.from(value));
+    }
+    return Buffer.concat(chunks, bytes).toString("utf8");
+  } catch (error) {
+    await reader.cancel().catch(() => {});
+    throw error;
+  } finally {
+    reader.releaseLock();
+  }
 }
 
 async function requestJson<T>(
@@ -233,7 +263,7 @@ async function requestJson<T>(
       if (opts.expectedStatus !== undefined && response.status !== opts.expectedStatus) {
         throw new OctoApiStatusMismatchError(path, response.status, opts.expectedStatus);
       }
-      const text = await response.text();
+      const text = await readResponseText(response, opts.maxResponseBytes);
       if (!text) return undefined;
       try {
         return parseOctoJson<T>(text);
@@ -242,7 +272,7 @@ async function requestJson<T>(
       }
     }
 
-    const body = await response.text().catch(() => "");
+    const body = await readResponseText(response, opts.maxResponseBytes).catch(() => "");
     const err = OctoApiError.from(response, path, body);
 
     if (!err.isRateLimited) throw err;

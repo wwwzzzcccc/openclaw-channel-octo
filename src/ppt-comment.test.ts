@@ -302,3 +302,45 @@ it('never contradicts a delivered answer based only on planning vocabulary', asy
  expect(dispatch).toHaveBeenCalledOnce();
  expect(postComment).toHaveBeenCalledOnce();
 });
+
+it.each(['c_abc', '1e3', '0x10', '+70', '70.0', '070', '0', '738523091827364987'])('rejects unrepliable PPT thread %s before reads or agent execution', async threadId => {
+ const dedupe=createMemoryDocMentionDedupeStore();
+ const dispatch=vi.fn(), postComment=vi.fn(), read=vi.fn();
+ const entries:any[]=[];
+ const handler=createDocMentionHandler({botUid:'bot',dedupe,dispatch,postComment,readPptRevision:read,
+  deadLetter:{record:async e=>{entries.push(e);},list:async()=>entries}});
+ const invalid={...mention(),threadId};
+ await handler(invalid);await handler(invalid);
+ expect(dispatch).not.toHaveBeenCalled();expect(postComment).not.toHaveBeenCalled();expect(read).not.toHaveBeenCalled();
+ expect(entries).toHaveLength(1);expect(entries[0]).toMatchObject({reason:'invalid_ppt_reply_target',threadId});
+ expect(await dedupe.claim('key')).toBe(true);
+});
+it('re-evaluates the PPT budget for each task while retaining a single deadline per task',async()=>{
+ let budget=1000;const deadlines:number[]=[];
+ const dispatch=vi.fn(async(_m:any,_r:any,extra:any)=>{
+  deadlines.push(extra.docTask.deadlineAt);
+  extra.docTask.reportTurn({finalDelivered:true,delivered:true,lost:false,noticed:false});
+  return 'completed' as const;
+ });
+ const now=vi.spyOn(Date,'now').mockReturnValue(100);
+ try {
+  const handler=createDocMentionHandler({botUid:'bot',dedupe:createMemoryDocMentionDedupeStore(),dispatch,postComment:async()=>{},dispatchTimeoutMs:()=>budget});
+  await handler(mention());budget=3000;
+  await handler({...mention(),idempotencyKey:'second'});
+  expect(deadlines).toEqual([1100,3100]);
+ } finally {now.mockRestore();}
+});
+it.each([undefined,'1'])('bounds chunked revision probes even with content-length=%s and cancels the stream',async length=>{
+ const cancel=vi.fn();let sent=0;
+ const stream=new ReadableStream<Uint8Array>({
+  pull(c){sent++;c.enqueue(new Uint8Array(1024*1024));},cancel,
+ });
+ vi.stubGlobal('fetch',vi.fn().mockResolvedValue(new Response(stream,{headers:length?{'content-length':length}:{}})));
+ await expect(readPptRevision({apiUrl:'https://docs.example',botToken:'test-only',docId:'deck'})).rejects.toThrow('byte limit');
+ expect(cancel).toHaveBeenCalledOnce();expect(sent).toBeLessThanOrEqual(12);
+});
+it('accepts a default-limit deck and its envelope when probing revision',async()=>{
+ const payload=JSON.stringify({data:{deck:'x'.repeat(8*1024*1024),baseRevision:42}});
+ vi.stubGlobal('fetch',vi.fn().mockResolvedValue(new Response(payload)));
+ await expect(readPptRevision({apiUrl:'https://docs.example',botToken:'test-only',docId:'deck'})).resolves.toBe(42);
+});

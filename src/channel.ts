@@ -1579,7 +1579,7 @@ export const octoPlugin: ChannelPlugin<ResolvedOctoAccount> = {
         // 整篇取回地址由这里的**已解析配置**拼,不让 agent 从载荷 url= 推域名。
         docsBaseUrl: account.config.docsApiUrl,
         docsCliPath: account.config.docsCliPath,
-        dispatchTimeoutMs: resolveDispatchTimeoutMs(ctx.cfg as OpenClawConfig, account),
+        dispatchTimeoutMs: () => resolveDispatchTimeoutMs(getOctoRuntime().config.current() as OpenClawConfig, account),
         signal: ctx.abortSignal,
         readPptRevision: (mention, signal) => readPptRevision({
           apiUrl: account.config.docsApiUrl,

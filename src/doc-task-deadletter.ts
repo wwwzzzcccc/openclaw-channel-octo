@@ -31,7 +31,7 @@ export interface DocTaskDeadLetter {
    * 为什么进死信:投递失败、未知协议类型或账号停止。
    * 保留成字段而不是隐含,是为了以后新增分类时旧记录仍可解释。
    */
-  reason: "undelivered_after_ack" | "unsupported_doc_kind" | "account_stopped_before_notice";
+  reason: "undelivered_after_ack" | "unsupported_doc_kind" | "account_stopped_before_notice" | "invalid_ppt_reply_target";
   /** 最后一次 POST 的错误摘要(已截断)。 */
   detail?: string;
 }

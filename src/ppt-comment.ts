@@ -2,6 +2,15 @@ import { createHash } from "node:crypto";
 import { getJson, postJson, type DocReplyIntent } from "./api-fetch.js";
 import type { DocCommentMention } from "./doc-mention.js";
 
+/** Same wire predicate before agent handoff and before reply delivery. */
+export function isValidPptThreadId(value: string): boolean {
+  return /^[1-9]\d*$/.test(value) && Number.isSafeInteger(Number(value));
+}
+
+// Covers the default 8 MiB deck plus its envelope. Larger custom decks still
+// receive their first editing turn; a failed probe only disables continuation.
+export const PPT_REVISION_MAX_RESPONSE_BYTES = 9 * 1024 * 1024;
+
 export function pptReplyKey(
   mentionKey: string,
   intent: DocReplyIntent | undefined,
@@ -29,7 +38,7 @@ export async function postPptDocReply(params: {
   signal?: AbortSignal;
 }): Promise<void> {
   const parentId = Number(params.parentId);
-  if (!/^[1-9]\d*$/.test(params.parentId) || !Number.isSafeInteger(parentId) || parentId < 1) {
+  if (!isValidPptThreadId(params.parentId)) {
     throw new Error("Invalid PPT thread id");
   }
 
@@ -108,7 +117,7 @@ export async function readPptRevision(params: {
     params.signal
       ? AbortSignal.any([params.signal, AbortSignal.timeout(10_000)])
       : AbortSignal.timeout(10_000),
-    { redirect: "error" },
+    { redirect: "error", maxResponseBytes: PPT_REVISION_MAX_RESPONSE_BYTES },
   );
   const revision = result?.data?.baseRevision;
   if (typeof revision !== "number" || !Number.isSafeInteger(revision) || revision < 0) {

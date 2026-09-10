@@ -1,4 +1,4 @@
-import { isPptPlanningReply } from "./ppt-comment.js";
+import { isPptPlanningReply, isValidPptThreadId } from "./ppt-comment.js";
 import { docTaskQueueScope, docTaskSessionScope, synthesizeDocMentionMessage, type DocCommentMention } from "./doc-mention.js";
 import type { DocMentionDedupeStore } from "./doc-mention-dedupe.js";
 import type { DocTaskDeadLetterStore } from "./doc-task-deadletter.js";
@@ -90,7 +90,7 @@ export interface DocMentionHandlerDeps {
   docsCliPath?: string;
   readPptRevision?: (mention: DocCommentMention, signal?: AbortSignal) => Promise<number>;
   /** Resolved account dispatch budget, shared by both PPT rounds. */
-  dispatchTimeoutMs?: number;
+  dispatchTimeoutMs?: number | (() => number);
   signal?: AbortSignal;
   dedupe: DocMentionDedupeStore;
   dispatch: DocMentionDispatch;
@@ -167,7 +167,35 @@ export function createDocMentionHandler(deps: DocMentionHandlerDeps) {
     }
 
     const isPpt = mention.docKind === "ppt";
-    const configuredBudget = deps.dispatchTimeoutMs;
+    if (isPpt && !isValidPptThreadId(mention.threadId)) {
+      // A permanent wire error must be terminal BEFORE any read or agent edit.
+      // There is no valid thread to notify; retain an operator-visible record.
+      deps.log?.error?.(`octo: invalid PPT reply target doc=${JSON.stringify(mention.docId)} thread=${JSON.stringify(mention.threadId)}; agent skipped`);
+      await deps.deadLetter?.record({
+        idempotencyKey: mention.idempotencyKey,
+        docId: mention.docId,
+        threadId: mention.threadId,
+        at: new Date().toISOString(),
+        reason: "invalid_ppt_reply_target",
+        detail: "PPT thread ID is not a canonical positive safe integer; agent was not started",
+      });
+      try {
+        await deps.dedupe.complete(mention.idempotencyKey);
+      } catch {
+        deps.dedupe.release(mention.idempotencyKey);
+        deps.log?.error?.("octo: could not persist rejected PPT reply target");
+      }
+      return;
+    }
+    let configuredBudget: number | undefined;
+    try {
+      if (isPpt) configuredBudget = typeof deps.dispatchTimeoutMs === "function"
+        ? deps.dispatchTimeoutMs() : deps.dispatchTimeoutMs;
+    } catch {
+      deps.dedupe.release(mention.idempotencyKey);
+      deps.log?.error?.("octo: could not resolve PPT task budget; agent skipped");
+      return;
+    }
     const deadlineAt = isPpt
       ? Date.now() + (typeof configuredBudget === "number" && Number.isFinite(configuredBudget) && configuredBudget > 0 ? configuredBudget : 660_000)
       : undefined;
