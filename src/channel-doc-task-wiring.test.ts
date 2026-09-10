@@ -580,7 +580,7 @@ describe("channel.ts:PPT 文档任务生产接线", () => {
       const url = String(input);
       requests.push({ url, init });
       if (init?.method === "POST") {
-        return new Response(JSON.stringify({ data: { id: 88 } }), { status: 201 });
+        return new Response(JSON.stringify({ id: 88 }), { status: 201 });
       }
       return new Response(JSON.stringify({ data: { baseRevision: 12 } }), { status: 200 });
     }) as typeof fetch;
@@ -622,7 +622,7 @@ describe("channel.ts:PPT 文档任务生产接线", () => {
 
       expect(requests.map(({ url }) => url)).toEqual([
         `${DOCS}/v1/bot/docs/d1/ppt`,
-        `${DOCS}/v1/bot/docs/d1/ppt/comments`,
+        `${DOCS}/v1/bot/docs/d1/comments`,
       ]);
       const post = requests[1]?.init;
       expect(JSON.parse(String(post?.body))).toEqual({

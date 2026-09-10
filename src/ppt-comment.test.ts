@@ -17,21 +17,21 @@ it('routes PPT separately and rejects unsupported document kinds',()=>{
  expect(text).toContain('docs ppt edit');expect(text).toContain('baseRevision');expect(text).toContain('/trusted/octo-cli');expect(text).not.toContain('untrusted');expect(text).toContain("OCTO_BOT_ID='bot'");expect(text).not.toContain('--bot-id');
 });
 it('posts only to the authoritative PPT thread with stable retry identity',async()=>{
- const fetcher=vi.fn().mockImplementation(async()=>new Response(JSON.stringify({data:{id:3}}),{status:201}));vi.stubGlobal('fetch',fetcher);
+ const fetcher=vi.fn().mockImplementation(async()=>new Response(JSON.stringify({id:3}),{status:201}));vi.stubGlobal('fetch',fetcher);
  const params={apiUrl:'https://docs.example/',botToken:'test-only',docId:'deck',parentId:'1',mentionKey:'key',body:'已修改',intent:'final' as const};
  await postPptDocReply(params);await postPptDocReply(params);
  expect(fetcher.mock.calls[0][0]).toBe(fetcher.mock.calls[1][0]);
- const [url,opts]=fetcher.mock.calls[0];expect(url).toBe('https://docs.example/v1/bot/docs/deck/ppt/comments');expect(JSON.parse(opts.body)).toEqual({body:'已修改',parentId:1});expect(opts.headers['Idempotency-Key']).toBe(pptReplyKey('key','final','已修改'));
+ const [url,opts]=fetcher.mock.calls[0];expect(url).toBe('https://docs.example/v1/bot/docs/deck/comments');expect(JSON.parse(opts.body)).toEqual({body:'已修改',parentId:1});expect(opts.headers['Idempotency-Key']).toBe(pptReplyKey('key','final','已修改'));
  expect(opts.redirect).toBe('error');expect(opts.signal).toBeInstanceOf(AbortSignal);
  await expect(postPptDocReply({...params,parentId:'0'})).rejects.toThrow('thread');
- fetcher.mockResolvedValue(new Response(JSON.stringify({data:{id:3}}),{status:200}));await expect(postPptDocReply(params)).rejects.toThrow('expected 201');
+ fetcher.mockResolvedValue(new Response(JSON.stringify({id:3}),{status:200}));await expect(postPptDocReply(params)).rejects.toThrow('expected 201');
 });
 it('honors PPT reply Retry-After and preserves the server error body',async()=>{
  vi.useFakeTimers();vi.spyOn(Math,'random').mockReturnValue(0);
  try {
   const fetcher=vi.fn()
    .mockResolvedValueOnce(new Response('slow down',{status:429,headers:{'Retry-After':'1'}}))
-   .mockResolvedValueOnce(new Response(JSON.stringify({data:{id:3}}),{status:201}));
+   .mockResolvedValueOnce(new Response(JSON.stringify({id:3}),{status:201}));
   vi.stubGlobal('fetch',fetcher);
   const promise=postPptDocReply({apiUrl:'https://docs.example',botToken:'test-only',docId:'deck',parentId:'1',mentionKey:'key',body:'已修改'});
   await vi.advanceTimersByTimeAsync(999);expect(fetcher).toHaveBeenCalledTimes(1);
@@ -53,7 +53,7 @@ it('preserves the server error body when the PPT revision read fails',async()=>{
   .rejects.toMatchObject({status:503,body:'revision unavailable'});
 });
 it('does not restart the short retry loop after the shared client exhausts a 429',async()=>{
- const postComment=vi.fn(async()=>{throw new OctoApiError({status:429,path:'/ppt/comments',body:'slow down',retryAfterMs:1000});});
+ const postComment=vi.fn(async()=>{throw new OctoApiError({status:429,path:'/comments',body:'slow down',retryAfterMs:1000});});
  const dispatch=vi.fn(async(_m:any,_r:any,extra:any)=>{
   await extra.docTask.postComment('已修改',undefined,'final').catch(()=>{});
   extra.docTask.reportTurn({finalDelivered:false,delivered:false,lost:true,noticed:false});
@@ -208,7 +208,7 @@ it('propagates account shutdown to an in-flight revision read and skips dispatch
  expect(dispatch).not.toHaveBeenCalled();
 });
 it('preserves the PPT backend safe-integer comment ID boundary',async()=>{
- const fetcher=vi.fn(async()=>new Response(JSON.stringify({data:{id:Number.MAX_SAFE_INTEGER}}),{status:201}));
+ const fetcher=vi.fn(async()=>new Response(JSON.stringify({id:Number.MAX_SAFE_INTEGER}),{status:201}));
  vi.stubGlobal('fetch',fetcher);
  const params={apiUrl:'https://docs.example',botToken:'test-only',docId:'deck',parentId:String(Number.MAX_SAFE_INTEGER),mentionKey:'key',body:'Done'};
  await postPptDocReply(params);
