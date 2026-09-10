@@ -1234,7 +1234,6 @@ export const octoPlugin: ChannelPlugin<ResolvedOctoAccount> = {
       lastError: runtime?.lastError ?? null,
       lastInboundAt: runtime?.lastInboundAt ?? null,
       lastOutboundAt: runtime?.lastOutboundAt ?? null,
-      eventPoller: (runtime as { eventPoller?: import("./events-poll.js").EventPollerStatus } | undefined)?.eventPoller ?? null,
     }),
   },
   gateway: {
@@ -1659,13 +1658,9 @@ export const octoPlugin: ChannelPlugin<ResolvedOctoAccount> = {
           intervalMs: account.config.pollIntervalMs,
           waitSeconds: account.config.eventWaitSeconds,
           cursorStore: createFileEventCursorStore({ accountId: account.accountId }),
-          onStatus: (eventPoller) => {
-            const patch = { accountId: account.accountId, eventPoller: eventPoller ?? null };
-            ctx.setStatus(patch);
-          },
           log,
           ...(handleBotTask ? { onBotTask: handleBotTask } : {}),
-          ...(docTasksEnabled ? { onDocMention: handleDocMention } : {}),
+          ...(docTasksEnabled ? { onDocMention: handleDocMention, docTaskDeadLetter } : {}),
           // 本地 cardInteraction 已废弃(服务端 per-Bot interaction_enabled 权威),
           // 这里无条件注册,与 main 保持一致。
           onCardAction: async (action) => {

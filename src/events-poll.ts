@@ -2,6 +2,7 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
+import type { DocTaskDeadLetterStore } from "./doc-task-deadletter.js";
 import { normalizeAccountId } from "./account-id.js";
 import {
   ackBotEvent,
@@ -63,16 +64,9 @@ export function createFileEventCursorStore(params: {
   };
 }
 
-export interface EventPollerStatus {
-  durableCursor: number;
-  scanCursor?: number;
-  blockedEventId?: number;
-  blockedKind?: string;
-}
-
 export interface EventPollerOptions {
-  /** Published to the owning channel account diagnostics; undefined clears on stop. */
-  onStatus?: (status: EventPollerStatus | undefined) => void;
+  /** Existing task diagnostics; unsupported kinds are never dispatched or auto-replayed. */
+  docTaskDeadLetter?: DocTaskDeadLetterStore;
   apiUrl: string;
   botToken: string;
   cursorStore: EventCursorStore;
@@ -100,7 +94,6 @@ export interface EventPoller {
   ready: Promise<void>;
   stop(): void;
   cursor(): number;
-  status(): EventPollerStatus;
 }
 
 const POLL_STARTERS_STATE_KEY = Symbol.for("openclaw.octo.card-event-poll-starters.v1");
@@ -172,12 +165,6 @@ export function startEventPoller(options: EventPollerOptions): EventPoller {
     );
   }
   let cursor = 0;
-  // Scan beyond a full page of unsupported document events without advancing
-  // the durable recovery cursor. Reset at the end of a scan or on restart.
-  let scanCursor: number | undefined;
-  // Only retain the earliest unsupported event: diagnostics must remain bounded.
-  let blockedDocument: { eventId: number; kind: string } | undefined;
-  let lastBlockedLogAt = -Infinity;
   let stopped = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
   // Tracks the in-flight request so stop() can cut a hold short. Without this the loop is a
@@ -185,14 +172,6 @@ export function startEventPoller(options: EventPollerOptions): EventPoller {
   // rest of that hold instead of shutting down.
   let inFlight: AbortController | undefined;
   let consecutiveErrors = 0;
-  const status = (): EventPollerStatus => ({
-    durableCursor: cursor, scanCursor,
-    blockedEventId: blockedDocument?.eventId, blockedKind: blockedDocument?.kind,
-  });
-  const publishStatus = () => {
-    // Diagnostics must never change event acknowledgement/retry behavior.
-    try { options.onStatus?.(stopped ? undefined : status()); } catch { /* isolated sink */ }
-  };
 
   const schedule = (delayMs: number): void => {
     if (stopped) return;
@@ -259,7 +238,7 @@ export function startEventPoller(options: EventPollerOptions): EventPoller {
       const controller = new AbortController();
       inFlight = controller;
       const timeoutSignal = AbortSignal.timeout(eventsPollTimeoutMs(waitSeconds));
-      const requestedCursor = scanCursor ?? cursor;
+      const requestedCursor = cursor;
       const events = await fetchBotEvents({
         apiUrl: options.apiUrl,
         botToken: options.botToken,
@@ -283,15 +262,8 @@ export function startEventPoller(options: EventPollerOptions): EventPoller {
       const ordered = events
         .filter((event) => Number.isSafeInteger(event.event_id) && event.event_id > requestedCursor)
         .sort((a, b) => a.event_id - b.event_id);
-      if (scanCursor === undefined && blockedDocument && !ordered.some(event => event.event_id === blockedDocument!.eventId)) {
-        blockedDocument = undefined;
-      }
-      // A retryable Bot Task or unsupported document kind leaves a cursor gap. Later events may still be
-      // handled and ACKed, but the durable/in-memory cursor must not advance
-      // past that gap or the failed task would be skipped forever.
-      let cursorBlocked = scanCursor !== undefined;
-      let unsupportedDocument = false;
-      let retryableTask = false;
+      // Only retryable Bot Tasks retain a bounded retry gap.
+      let cursorBlocked = false;
       for (const event of ordered) {
         // 已识别的事件才 ack。未识别的只推进游标(本消费者不再重复拉取),
         // 留在服务端直至过期 —— 不 ack 自己没处理的事件。
@@ -334,19 +306,25 @@ export function startEventPoller(options: EventPollerOptions): EventPoller {
               rawKind.trim() &&
               !["html", "ppt"].includes(rawKind.trim().toLowerCase())
             ) {
-              // Retain the gap so upgrading the consumer can recover the mention.
-              // Later recognized events still run and ACK under their dedupe contracts.
-              cursorBlocked = true;
-              unsupportedDocument = true;
-              if (!blockedDocument || event.event_id < blockedDocument.eventId) {
-                blockedDocument = { eventId: event.event_id, kind: rawKind.slice(0, 128) };
+              // An unknown protocol cannot safely select a comment API. Record it
+              // for operator recovery, then advance without ACK or agent execution.
+              // Retaining an unbounded gap would replay later completed tasks once
+              // their bounded dedupe entries have been evicted.
+              const data = event.event_data ?? {};
+              const field = (value: unknown) => typeof value === "string" ? value.slice(0, 256) : "";
+              const kind = rawKind.slice(0, 128);
+              options.log?.error?.(`octo: unsupported doc_kind for event ${event.event_id}: ${JSON.stringify(kind)}; recorded for operator recovery without dispatch or ACK`);
+              try {
+                await options.docTaskDeadLetter?.record({
+                  idempotencyKey: field(data.idempotency_key) || `unsupported:${event.event_id}`,
+                  docId: field(data.doc_id), threadId: field(data.thread_id) || field(data.comment_id),
+                  at: new Date().toISOString(), reason: "unsupported_doc_kind",
+                  detail: `event_id=${event.event_id} doc_kind=${JSON.stringify(kind)}`,
+                });
+              } catch {
+                options.log?.error?.(`octo: unsupported doc event ${event.event_id} could not be recorded; cursor still advances`);
               }
-              if (Date.now() - lastBlockedLogAt >= 60_000) {
-                lastBlockedLogAt = Date.now();
-                options.log?.error?.(
-                  `octo: unsupported doc_kind for event ${blockedDocument.eventId}: ${JSON.stringify(blockedDocument.kind)}; cursor retained until supported or server expiry`,
-                );
-              }
+              if (stopped) return;
             }
           }
         }
@@ -377,8 +355,7 @@ export function startEventPoller(options: EventPollerOptions): EventPoller {
               await options.onBotTask(parsed.task);
             } catch (error) {
               retryBotTask = true;
-              retryableTask = true;
-              cursorBlocked = true;
+                cursorBlocked = true;
               if (error instanceof RetryableBotTaskError) {
                 botTaskRetryAttempt = Math.max(botTaskRetryAttempt, error.attemptCount);
               }
@@ -433,13 +410,6 @@ export function startEventPoller(options: EventPollerOptions): EventPoller {
           }
         }
       }
-      // Read one page per tick. A full unsupported page must not starve later
-      // supported events; keep the recovery gap across scan pages. Short pages
-      // end the scan so expiry/upgrade can release the gap on the next pass.
-      scanCursor = !retryableTask && (scanCursor !== undefined || unsupportedDocument) && ordered.length === limit
-        ? ordered[ordered.length - 1]!.event_id
-        : undefined;
-      if (blockedDocument && cursor >= blockedDocument.eventId) blockedDocument = undefined;
       // Classify from forward progress, not from response size. `ordered` is what actually
       // advances the cursor (:filtered by isSafeInteger + > cursor), and every element of it is
       // assigned to `cursor` below. A response that is non-empty but entirely undrainable —
@@ -465,7 +435,6 @@ export function startEventPoller(options: EventPollerOptions): EventPoller {
       }
     } finally {
       inFlight = undefined;
-      publishStatus();
       schedule(nextDelayMs(outcome, Date.now() - startedAt, botTaskRetryAttempt));
     }
   };
@@ -473,7 +442,6 @@ export function startEventPoller(options: EventPollerOptions): EventPoller {
   const ready = options.cursorStore.load()
     .then((loaded) => {
       cursor = Number.isSafeInteger(loaded) && loaded >= 0 ? loaded : 0;
-      publishStatus();
       // "bot" not "card": this loop now drains card actions *and* doc_comment_mention events.
       options.log?.info?.(`octo: bot event poller ready at cursor=${cursor}`);
       // First tick keeps main's timing: short polling waits one interval before its first read,
@@ -496,13 +464,9 @@ export function startEventPoller(options: EventPollerOptions): EventPoller {
       // Cut a hold short rather than waiting it out. Set `stopped` first so the abort is
       // classified as a shutdown, not a poll failure.
       inFlight?.abort();
-      scanCursor = undefined;
-      blockedDocument = undefined;
-      publishStatus();
     },
     cursor(): number {
       return cursor;
     },
-    status,
   };
 }

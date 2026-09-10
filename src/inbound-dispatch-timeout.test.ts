@@ -296,6 +296,10 @@ afterEach(() => {
 
 describe("dispatch timeout guard (issue #75)", () => {
   it.each(["deadline", "account stop"])("PPT %s cancels the runtime before a late write or reply", async (reason) => {
+    vi.useFakeTimers();
+    let enterRuntime!: () => void;
+    const entered = new Promise<void>(resolve => { enterRuntime = resolve; });
+    try {
     const { dispatch } = installImmediateRuntime();
     installFetchStub();
     const controller = new AbortController();
@@ -304,6 +308,7 @@ describe("dispatch timeout guard (issue #75)", () => {
     const postComment = vi.fn().mockResolvedValue(undefined);
     dispatch.mockImplementation(async (args: any) => {
       const signal = args.replyOptions.abortSignal as AbortSignal;
+      enterRuntime();
       if (reason === "account stop") setTimeout(() => controller.abort(), 20);
       await new Promise<void>((resolve, reject) => {
         const pending = setTimeout(() => { lateWrite = true; resolve(); }, 80);
@@ -315,7 +320,7 @@ describe("dispatch timeout guard (issue #75)", () => {
       });
       await args.dispatcherOptions.deliver({ text: "late final" }, { kind: "final" });
     });
-    await expect(runInbound({
+    const rejected = expect(runInbound({
       log: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} },
       docTask: {
         docId: "deck", threadId: "1", sessionScope: "ppt:deck:1",
@@ -323,10 +328,13 @@ describe("dispatch timeout guard (issue #75)", () => {
         postComment, reportTurn: () => {},
       },
     })).rejects.toThrow(reason === "deadline" ? "dispatch timed out" : "account stopped");
-    await new Promise(resolve => setTimeout(resolve, 90));
+    await entered;
+    await vi.advanceTimersByTimeAsync(1100);
+    await rejected;
     expect(aborted).toBe(true);
     expect(lateWrite).toBe(false);
     expect(postComment.mock.calls.some(call => call[0].includes("late final"))).toBe(false);
+    } finally { vi.useRealTimers(); }
   });
 
   it("rolls back a persisted reservation if account stops before runtime handoff", async () => {
@@ -340,6 +348,23 @@ describe("dispatch timeout guard (issue #75)", () => {
       onAgentTurnStarted:async()=>{controller.abort();},onAgentTurnNotStarted:rollback,
     }})).rejects.toThrow("account stopped");
     expect(dispatch).not.toHaveBeenCalled();expect(rollback).toHaveBeenCalledOnce();
+  });
+
+  it.each([true, false])("rolls back only a synchronous runtime handoff failure (%s)", async synchronous => {
+    const { dispatch } = installImmediateRuntime();
+    installFetchStub();
+    const rollback = vi.fn();
+    dispatch.mockImplementation(() => {
+      if (synchronous) throw new Error("dispatch rejected");
+      return Promise.reject(new Error("dispatch rejected"));
+    });
+    await expect(runInbound({docTask:{
+      docId:"deck",threadId:"1",sessionScope:"ppt:deck:1",abortOnTimeout:true,
+      postComment:vi.fn(),reportTurn:()=>{},
+      onAgentTurnStarted:async()=>{},onAgentTurnNotStarted:rollback,
+    }})).rejects.toThrow("dispatch rejected");
+    expect(dispatch).toHaveBeenCalledOnce();
+    expect(rollback).toHaveBeenCalledTimes(synchronous ? 1 : 0);
   });
 
   it("does not hand an expired PPT task to the Agent runtime", async () => {

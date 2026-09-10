@@ -76,14 +76,13 @@ it.each(['throw','dropped','plan','success'])('does not reuse round-one success 
  const handler=createDocMentionHandler({botUid:'bot',dedupe,dispatch,postComment,readPptRevision:async()=>3});
  await handler(mention());expect(dispatch).toHaveBeenCalledTimes(2);
  expect(await dedupe.claim('key')).toBe(true);
- if(outcome!=='success')expect(postComment).toHaveBeenLastCalledWith(expect.anything(),expect.stringContaining('未能确认请求的修改已完成'),expect.any(AbortSignal),'notice');
+ if(outcome==='throw'||outcome==='dropped')expect(postComment).toHaveBeenLastCalledWith(expect.anything(),expect.stringContaining('无法确认修改结果'),expect.any(AbortSignal),'notice');
 });
 it.each([true,false])('never continues when revision changed or its read failed (%s)',async changed=>{
  let reads=0;const dedupe=createMemoryDocMentionDedupeStore(),postComment=vi.fn(async()=>{});const dispatch=vi.fn(async(_m:any,_r:any,extra:any)=>{await extra.docTask.postComment('我会修改',undefined,'final');extra.docTask.reportTurn({finalDelivered:true,delivered:true,lost:false,noticed:false});return 'completed' as const;});
  await createDocMentionHandler({botUid:'bot',dedupe,dispatch,postComment,readPptRevision:async()=>{if(!changed)throw new Error('offline');return ++reads;}})(mention());
  expect(dispatch).toHaveBeenCalledOnce();
- expect(postComment).toHaveBeenCalledTimes(2);
- expect(postComment).toHaveBeenLastCalledWith(expect.anything(),expect.stringContaining('未能确认请求的修改已完成'),expect.any(AbortSignal),'notice');
+ expect(postComment).toHaveBeenCalledOnce();
  expect(await dedupe.claim('key')).toBe(true);
 });
 it.each([
@@ -278,4 +277,28 @@ it('removes only a known unstarted PPT reservation and permits restart delivery'
   expect(await store().claim('key')).toBe(false);
   expect(await store().claim('previous-completed')).toBe(true);
  } finally {await rm(baseDir,{recursive:true,force:true});}
+});
+
+it.each([
+ '我会汇报结果：第 3 页标题现为蓝色，处理完毕。',
+ '先修改第 3 页标题为「Q3 回顾」，再提交，核实无误。',
+ '我会先确认一下：要修改哪一页？请指定具体页面。',
+])('does not continue a completed or ambiguous request: %s', body => {
+ expect(isPptPlanningReply(body)).toBe(false);
+});
+it('recognizes a plan to inspect whether an edit already exists', () => {
+ expect(isPptPlanningReply('我会先检查标题是否已经修改，再进行处理。')).toBe(true);
+});
+it('never contradicts a delivered answer based only on planning vocabulary', async () => {
+ const postComment=vi.fn().mockResolvedValue(undefined);
+ let revision=1;
+ const dispatch=vi.fn(async(_m:any,_r:any,extra:any)=>{
+  await extra.docTask.postComment('我会汇报结果：第 3 页标题现为蓝色，处理完毕。',undefined,'final');
+  extra.docTask.reportTurn({finalDelivered:true,delivered:true,lost:false,noticed:false});
+  revision=2;
+  return 'completed' as const;
+ });
+ await createDocMentionHandler({botUid:'bot',dedupe:createMemoryDocMentionDedupeStore(),dispatch,postComment,readPptRevision:async()=>revision})(mention());
+ expect(dispatch).toHaveBeenCalledOnce();
+ expect(postComment).toHaveBeenCalledOnce();
 });

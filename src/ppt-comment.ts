@@ -15,6 +15,8 @@ export function pptReplyKey(
 /**
  * Always reply to the authoritative PPT root. Malformed IDs never fall back to
  * a root comment. The handler retries with the same body and idempotency key.
+ * The common comments route returns flat HTTP 201 {id}, including replay;
+ * GET /ppt separately retains {data:{baseRevision}}. See docs/ppt-contract.md.
  */
 export async function postPptDocReply(params: {
   apiUrl: string;
@@ -129,7 +131,10 @@ export function isPptPlanningReply(body: unknown): boolean {
     if (stripped === normalized) break;
     normalized = stripped.trimStart();
   }
-  if (/[?？]\s*(?:\*\*|__)?$/.test(normalized)) return false;
+  if (/[?？]/.test(normalized)) return false;
+  if (/(?:处理完毕|核实无误|修改完成|提交完成)/.test(normalized)) return false;
+  // A prospective check is not a completion claim by this turn.
+  normalized = normalized.replace(/是否已经?(?:完成|修改|提交|更新)/g, "是否需要处理");
   // Clarification remains a valid final even without a question mark.
   if (/^(?:我先)?(?:确认|问|询问)(?:一下)?[，,:：\s]/.test(normalized) &&
       /(?:吗|么|哪|是否|能否|要不要|还是)/.test(normalized)) return false;

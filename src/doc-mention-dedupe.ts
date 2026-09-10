@@ -140,10 +140,13 @@ export function createFileDocMentionDedupeStore(params: {
         const retained = cache.filter(key => key !== idempotencyKey);
         const restored = (evictedByReservation.get(idempotencyKey) ?? []).filter(key => !retained.includes(key));
         const next = [...restored, ...retained].slice(-capacity);
-        await persist(next);
-        cache = next;
-        evictedByReservation.delete(idempotencyKey);
-        inFlight.delete(idempotencyKey);
+        try {
+          await persist(next);
+          cache = next;
+          evictedByReservation.delete(idempotencyKey);
+        } finally {
+          inFlight.delete(idempotencyKey);
+        }
       });
       tail = run.then(() => undefined, () => undefined);
       return run;

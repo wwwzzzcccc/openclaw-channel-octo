@@ -318,18 +318,16 @@ export function createDocMentionHandler(deps: DocMentionHandlerDeps) {
     // 进了评论区」本身,不需要再用 `&& !lost` 去补偿。那个补偿是回合全局的:一次
     // 进度评论的瞬时 5xx 会否决掉一个确实落地的最终答复,于是在正确答复下面贴出
     // 「没有给出答复」并允许重放。`lost` 现在只作观测字段。
-    // Delivery is separate from task completion. A PPT plan must not be
-    // reported as completed even when revision reads fail or another editor
-    // advances the shared revision. Neither case safely permits a continuation.
-    const workLanded = report.finalDelivered && !(
-      mention.docKind === "ppt" && isPptPlanningReply(lastFinal)
-    );
+    // A phrasing heuristic only gates the optional continuation. It cannot
+    // contradict a delivered answer or prove whether an edit was committed.
+    const planningSuspected = mention.docKind === "ppt" && isPptPlanningReply(lastFinal);
+    const workLanded = report.finalDelivered;
     /** 用户在干等:既没拿到答复,也没收到任何失败提示。 */
     const userLeftHanging = !workLanded && !report.noticed;
 
     deps.log?.info?.(
       `octo: doc task doc=${mention.docId} thread=${mention.threadId} workLanded=${workLanded} ` +
-        `final=${report.finalDelivered} delivered=${report.delivered} lost=${report.lost} noticed=${report.noticed} dispatch=${outcome}`,
+        `planningSuspected=${planningSuspected} final=${report.finalDelivered} delivered=${report.delivered} lost=${report.lost} noticed=${report.noticed} dispatch=${outcome}`,
     );
 
     if (userLeftHanging) {
@@ -337,7 +335,7 @@ export function createDocMentionHandler(deps: DocMentionHandlerDeps) {
       try {
         await postWithRetry(
           mention.docKind === "ppt" && anyFinalDelivered
-            ? "本次仅返回了处理计划，未能确认请求的修改已完成。请检查当前 PPT；如仍需修改，可重新 @Bot 明确要求。系统不会自动重复执行。"
+            ? "本次执行续步未能送达最终答复，无法确认修改结果。请先检查当前 PPT；系统不会自动重复执行。"
             : NOTHING_DELIVERED_NOTICE,
           AbortSignal.timeout(DOC_TASK_NOTICE_TIMEOUT_MS),
           // ★ 必须显式 "notice"。缺省会在 postHtmlDocReply 回落成 applied ——
@@ -362,7 +360,7 @@ export function createDocMentionHandler(deps: DocMentionHandlerDeps) {
           docId: mention.docId,
           threadId: mention.threadId,
           at: new Date().toISOString(),
-          reason: "undelivered_after_ack",
+          reason: deps.signal?.aborted ? "account_stopped_before_notice" : "undelivered_after_ack",
           detail: String(noticeErr),
         });
       }

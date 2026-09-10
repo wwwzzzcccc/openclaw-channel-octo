@@ -638,18 +638,11 @@ describe("channel.ts:PPT 文档任务生产接线", () => {
   }, 60_000);
 });
 
-it('publishes and clears event diagnostics through the production account snapshot',async()=>{
- const { octoPlugin } = await import('./channel.js');
- const runtime: Record<string, unknown> = {};
- const stop = await startAccount({docTasks:true},patch=>Object.assign(runtime,patch));
+it('wires unsupported document diagnostics into the existing dead-letter store',async()=>{
+ const stop = await startAccount({docTasks:true});
  try {
-  const options=pollerOptions().find(o=>typeof o.onStatus==='function')!;
-  const onStatus=options.onStatus as (status: unknown)=>void;
-  const status={durableCursor:31,scanCursor:80,blockedEventId:32,blockedKind:'future_deck'};
-  onStatus(status);
-  const snapshot=()=>octoPlugin.status!.buildAccountSnapshot!({account:{accountId:'acct1',config:{}},runtime} as never);
-  expect(await snapshot()).toMatchObject({eventPoller:status});
-  onStatus(undefined);
-  expect(await snapshot()).toMatchObject({eventPoller:null});
+  const options=pollerOptions().find(o=>typeof o.onDocMention==='function')!;
+  expect(options.docTaskDeadLetter).toMatchObject({record:expect.any(Function),list:expect.any(Function)});
+  expect(options.onStatus).toBeUndefined();
  } finally {await stop();}
 });

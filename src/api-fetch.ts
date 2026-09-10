@@ -230,10 +230,10 @@ async function requestJson<T>(
     });
 
     if (response.ok) {
-      const text = await response.text();
       if (opts.expectedStatus !== undefined && response.status !== opts.expectedStatus) {
         throw new OctoApiStatusMismatchError(path, response.status, opts.expectedStatus);
       }
+      const text = await response.text();
       if (!text) return undefined;
       try {
         return parseOctoJson<T>(text);

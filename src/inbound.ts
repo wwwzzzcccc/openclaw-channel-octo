@@ -3393,7 +3393,6 @@ export async function handleInboundMessage(params: {
         dispatchAbortController?.abort(timeoutError);
       }, remainingDispatchMs);
     });
-    runtimeHandedOff = true;
     dispatchPromise = core.channel.reply.dispatchReplyWithBufferedBlockDispatcher({
       ctx: ctxPayload,
       cfg: config,
@@ -3676,6 +3675,7 @@ export async function handleInboundMessage(params: {
         onFreshSettledDelivery?: () => Promise<{ visibleReplySent: boolean } | undefined>;
       }),
     });
+    runtimeHandedOff = true;
     await Promise.race([dispatchPromise, dispatchTimeoutPromise]);
   } catch (err) {
     if (handoffRecorded && !runtimeHandedOff) {
@@ -3732,6 +3732,7 @@ export async function handleInboundMessage(params: {
       if (userFacingFinalDelivered) {
         log?.info?.("octo: dispatch timed out after a final answer already landed — suppressing the timeout notice");
       } else if (abortTimedOutDispatch) {
+        // Aborted Bot/PPT tasks use their owning handler for fallback delivery.
         // Generic Bot Tasks have no channel destination: their business reply
         // (when required) goes through the source-specific CLI. Keep this
         // synthetic timeout notice as operator telemetry instead of trying to
