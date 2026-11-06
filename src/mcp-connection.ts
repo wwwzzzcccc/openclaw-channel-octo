@@ -112,8 +112,19 @@ export function registerOctoMcpPromptHint(api: OpenClawPluginApi): void {
 
 /** Cached account connections do not grant Bot authority to lower-trust task turns. */
 export function registerOctoMcpToolPolicy(api: OpenClawPluginApi): void {
+  let hasSeenOctoMcp = !!BUNDLED_MCP_URL;
+  const observeConfiguration = () => {
+    const servers = record(record(record(api.runtime.config.current()).mcp).servers);
+    hasSeenOctoMcp ||= Object.hasOwn(servers, OCTO_MCP_SERVER_NAME) || Object.hasOwn(servers, 'octo-business');
+    return hasSeenOctoMcp;
+  };
+  try { observeConfiguration(); }
+  catch { hasSeenOctoMcp = true; /* Unknown cached authority fails closed. */ }
   api.on('before_tool_call', (event, ctx) => {
-    if (!isExternalTaskSessionKey(ctx.sessionKey)) return;
+    if (!isExternalTaskSessionKey(ctx.sessionKey)) {
+      try { observeConfiguration(); } catch { /* Ordinary IM remains unaffected. */ }
+      return;
+    }
     // Delegated child sessions lose the external-task marker but can inherit
     // the sender/account. Keep Bot authority from escaping through a child.
     const delegates = ['sessions_spawn', 'sessions_yield', 'sessions_send'].includes(event.toolName);
@@ -122,8 +133,9 @@ export function registerOctoMcpToolPolicy(api: OpenClawPluginApi): void {
     // Guard the actual target, preserving unrelated catalog tools for tasks.
     if (!delegates && !businessTool) return;
     if (!businessTool) {
-      if (typeof (api as ResolverApi).registerMcpServerConnectionResolver !== 'function') return;
-      try { if (!octoMcpEnabled(api.runtime.config.current())) return; }
+      // Static/legacy and removed declarations may retain host-cached Bot
+      // connections. Once observed, keep this guard until registry reload.
+      try { if (!observeConfiguration()) return; }
       catch { /* Cached MCP connections may still exist: fail closed. */ }
     }
     return { block: true, blockReason: 'Octo business MCP is unavailable in external task sessions: Bot-level authority is not scoped to the external task actor. Use only the output mechanism specified by the task.' };

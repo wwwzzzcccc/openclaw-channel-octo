@@ -182,6 +182,8 @@ jobs:
       - run: npm test
 
       - run: npm run build
+        env:
+          OCTO_MCP_URL: ${{ vars.OCTO_MCP_URL }}
 
       - name: verify build artifacts
         run: |
@@ -189,6 +191,8 @@ jobs:
           test -f dist/setup-entry.js || (echo "::error::dist/setup-entry.js missing" && exit 1)
 
       - run: npm pack
+        env:
+          OCTO_MCP_URL: ${{ vars.OCTO_MCP_URL }}
 
       - name: upload tarball
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

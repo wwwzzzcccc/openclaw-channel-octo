@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import plugin from '../index.js';
+import { registerOctoMcpToolPolicy } from './mcp-connection.js';
 import { pendingInboundContext } from './inbound.js';
 vi.mock('openclaw/plugin-sdk/channel-entry-contract', () => ({ defineBundledChannelEntry: (entry: unknown) => entry }));
 function setup(current = () => ({ mcp: { servers: { 'octo-mcp': { transport: 'streamable-http', url: 'https://mcp.example.test/' } } } })) {
@@ -9,6 +10,34 @@ function setup(current = () => ({ mcp: { servers: { 'octo-mcp': { transport: 'st
   return { prompt: (event: any, ctx: any) => { const results = (hooks.get('before_prompt_build') ?? []).map(fn => fn(event, ctx)); return {prependSystemContext: results.map(x => x?.prependSystemContext).filter(Boolean).join('\n\n'), prependContext: results.map(x => x?.prependContext).filter(Boolean).join('\n\n')}; }, before: (name: string, sessionKey: string) => (hooks.get('before_tool_call') ?? []).map(fn => fn({toolName: name, params: {}}, {sessionKey, runId: 'run'})).find(x => x?.block) };
 }
 describe('MCP authority and diagnostic through plugin hooks', () => {
+  it.each(['octo-business', 'octo-mcp'])('retains the %s delegation guard after config deletion until reload', service => {
+    const hooks: any[] = [];
+    let cfg: any = { mcp: { servers: { [service]: { transport: 'streamable-http', url: 'https://mcp.test/' } } } };
+    registerOctoMcpToolPolicy({ runtime: { config: { current: () => cfg } }, on: (_name: string, fn: any) => hooks.push(fn) } as any);
+    cfg = {};
+    for (const scope of ['doctask:doc:comment', 'octo:bot-task:bot:loop:issue']) {
+      for (const toolName of ['sessions_spawn', 'sessions_yield', 'sessions_send']) expect(hooks[0]({toolName}, {sessionKey:'agent:main:octo:acct:' + scope})).toMatchObject({block: true});
+    }
+    expect(hooks[0]({toolName:'sessions_spawn'}, {sessionKey:'agent:main:octo:acct:dm:human'})).toBeUndefined();
+  });
+  it.each(['octo-business', 'octo-mcp'])('blocks cached/static %s delegation without the resolver API', service => {
+    const hooks: any[] = [];
+    const cfg = { mcp: { servers: { [service]: { enabled: false } } } };
+    registerOctoMcpToolPolicy({ runtime: { config: { current: () => cfg } }, on: (_name: string, fn: any) => hooks.push(fn) } as any);
+    for (const scope of ['doctask:doc:comment', 'octo:bot-task:bot:loop:issue']) {
+      for (const toolName of ['sessions_spawn', 'sessions_yield', 'sessions_send', 'octo-business__execute']) {
+        expect(hooks[0]({toolName}, {sessionKey: 'agent:main:octo:acct:' + scope})).toMatchObject({block: true});
+      }
+    }
+    expect(hooks[0]({toolName: 'sessions_spawn'}, {sessionKey: 'agent:main:octo:acct:dm:human'})).toBeUndefined();
+  });
+  it.each(['doctask:doc:comment', 'octo:bot-task:bot:loop:issue'])('blocks delegation with the legacy static service in %s', scope => {
+    const { before } = setup(() => ({ mcp: { servers: { 'octo-business': { transport: 'streamable-http', url: 'https://legacy.test/', headers: { Authorization: 'Bearer bf_fixture' } } } } } as any));
+    for (const name of ['sessions_spawn', 'sessions_yield', 'sessions_send']) {
+      expect(before(name, 'agent:main:octo:acct:' + scope)).toMatchObject({ block: true });
+      expect(before(name, 'agent:main:octo:acct:dm:human')).toBeUndefined();
+    }
+  });
   it.each(['doctask:doc:comment', 'octo:bot-task:bot:loop:issue'])('blocks business tools in external task %s', scope => {
     const {before} = setup();
     for (const tool of ['mcp__octo-mcp__execute', 'mcp__octo_mcp__call_op', 'mcp__octo-mcp-2__execute', 'octo-mcp__execute', 'octo-mcp__call_op', 'octo-business__execute', 'octo-mcp-2__execute', 'octo_mcp-12__call_op', 'sessions_spawn', 'sessions_yield', 'sessions_send']) expect(before(tool, 'agent:main:octo:acct:'+scope)).toMatchObject({block: true});

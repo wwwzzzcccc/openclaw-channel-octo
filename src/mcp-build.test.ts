@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { configureMcpBuild } from '../scripts/configure-mcp.mjs';
 
 describe('deployment-provided MCP endpoint', () => {
-  it('leaves source and manifest byte-identical when no deployment variable is provided', () => {
+  it('clears generated deployment state when no deployment variable is provided', () => {
     const root = mkdtempSync(join(tmpdir(), 'octo-mcp-unconfigured-'));
     try {
       mkdirSync(join(root, 'src'));
@@ -14,10 +14,10 @@ describe('deployment-provided MCP endpoint', () => {
       writeFileSync(join(root, 'src/mcp-deployment.ts'), source);
       configureMcpBuild(root, undefined);
       expect(readFileSync(join(root, 'openclaw.plugin.json'), 'utf8')).toBe(manifest);
-      expect(readFileSync(join(root, 'src/mcp-deployment.ts'), 'utf8')).toBe(source);
+      expect(readFileSync(join(root, 'src/mcp-deployment.ts'), 'utf8')).toContain('= undefined;');
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
-  it('retires the old manifest service name while preserving an existing release endpoint', () => {
+  it('clears legacy deployment entries when no URL is supplied', () => {
     const root = mkdtempSync(join(tmpdir(), 'octo-mcp-name-'));
     try {
       mkdirSync(join(root, 'src'));
@@ -26,8 +26,7 @@ describe('deployment-provided MCP endpoint', () => {
       } }));
       configureMcpBuild(root, undefined);
       const manifest = JSON.parse(readFileSync(join(root, 'openclaw.plugin.json'), 'utf8'));
-      expect(manifest.mcpServers['octo-business']).toBeUndefined();
-      expect(manifest.mcpServers['octo-mcp'].url).toBe('https://existing.test/');
+      expect(manifest.mcpServers).toBeUndefined();
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
   it('ships an explicit Streamable HTTP declaration and resolver default from one deployment variable', () => {
@@ -42,9 +41,9 @@ describe('deployment-provided MCP endpoint', () => {
       const generated = readFileSync(join(root, 'src/mcp-deployment.ts'), 'utf8');
       expect(generated).toContain('https://deployment.test/mcp');
       configureMcpBuild(root, undefined);
-      expect(readFileSync(join(root, 'src/mcp-deployment.ts'), 'utf8')).toBe(generated);
+      expect(readFileSync(join(root, 'src/mcp-deployment.ts'), 'utf8')).toContain('= undefined;');
       expect(() => configureMcpBuild(root, 'https://user:secret@mcp.test/')).toThrow(/OCTO_MCP_URL/);
-      expect(readFileSync(join(root, 'src/mcp-deployment.ts'), 'utf8')).toBe(generated);
+      expect(readFileSync(join(root, 'src/mcp-deployment.ts'), 'utf8')).toContain('= undefined;');
       configureMcpBuild(root, '');
       expect(JSON.parse(readFileSync(join(root, 'openclaw.plugin.json'), 'utf8')).mcpServers['octo-mcp']).toBeUndefined();
     } finally { rmSync(root, { recursive: true, force: true }); }

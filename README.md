@@ -65,17 +65,21 @@ hosts retain ordinary channel behavior; configuring MCP on a host without this
 API produces an explicit compatibility warning and does not inject credentials.
 Such hosts must be upgraded before MCP business operations can work.
 
-The release pipeline supplies `OCTO_MCP_URL` when building this plugin and the
+Release operators configure the public repository variable `OCTO_MCP_URL`; the
+publishing workflow passes it to both build and pack. An unset variable ships
+without MCP. The matching deployment pipeline supplies the same endpoint to the
 matching `create-openclaw-octo` tool. For example (deployment operator only):
 
 ```bash
-OCTO_MCP_URL=https://mcp.example.com/ npm run build
+export OCTO_MCP_URL=https://mcp.example.com/
+npm run build
+npm pack # prepack builds again, using the same exported endpoint
 ```
 
 Build configured releases in an isolated, disposable packaging checkout: `prebuild`
 writes `src/mcp-deployment.ts` and `openclaw.plugin.json` in that checkout. Do not
-commit deployment-generated changes back to the source repository. An unset
-variable preserves existing artifacts; an empty value explicitly clears them.
+commit deployment-generated changes back to the source repository. An unset or empty
+variable clears generated deployment defaults; every build must supply its intended endpoint.
 
 The plugin package then contains the endpoint and a native `mcpServers` entry.
 The binding tool contains the same deployment default. **End users do not enter
@@ -99,8 +103,8 @@ server's environment does not propagate to user machines; shipping the built
 artifact carries the deployment address. The gateway need not inherit a user
 shell variable. Source builds without a deployment address retain existing
 channel behavior; the installer reports that MCP is not configured. A build
-variable set to an empty string clears the default; leaving it unset preserves
-an already configured artifact. The address is never guessed from the Octo API.
+variable set to an empty string or left unset clears the default; supply the endpoint again when
+rebuilding a configured artifact. The address is never guessed from the Octo API.
 
 The release default lives in the plugin manifest, so later releases can update
 it automatically. Explicit operator overrides use `mcp.servers.octo-mcp`:
@@ -738,9 +742,17 @@ business tool names. Native Tool Search routes each `tool_call` target through
 the normal execution hooks, so the actual Octo target is rejected while unrelated
 non-Octo catalog tools remain available. MCP-capable hosts must preserve this
 nested hook contract; exposing an unguarded dispatcher is not supported. Ordinary
-IM keeps Octo MCP access. While MCP is enabled, external tasks cannot delegate
-Bot authority; that delegation guard fails closed when live configuration is unreadable.
+IM keeps Octo MCP access. When either the current or prerelease Octo MCP service is declared, external tasks
+cannot delegate Bot authority, including on hosts using static legacy connections.
+Disabled or rejected declarations keep this guard because host connections may
+remain cached. Once this plugin instance observes an Octo MCP declaration, the
+guard remains until it is reloaded, even if the declaration is deleted. It also
+fails closed when live configuration is unreadable.
 
 After building, `node scripts/check-mcp-tool-search.mjs /path/to/openclaw`
 checks the native Tool Search execution-hook contract with synthetic tools and
 configuration. It does not start a Gateway or contact a business service.
+
+The isolated `node scripts/check-mcp-package.mjs` check runs the real build and
+pack lifecycles, reads the tarball manifest and compiled default, then confirms
+an unconfigured pack clears both. It does not publish or contact a service.
